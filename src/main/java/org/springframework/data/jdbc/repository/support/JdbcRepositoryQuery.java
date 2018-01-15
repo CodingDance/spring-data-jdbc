@@ -15,11 +15,13 @@
  */
 package org.springframework.data.jdbc.repository.support;
 
+import org.springframework.beans.BeanUtils;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.data.jdbc.mapping.model.JdbcMappingContext;
 import org.springframework.data.repository.query.RepositoryQuery;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.util.StringUtils;
 
 /**
  * A query to be executed based on a repository method, it's annotated SQL query and the arguments provided to the
@@ -36,17 +38,46 @@ class JdbcRepositoryQuery implements RepositoryQuery {
 	private final JdbcMappingContext context;
 	private final RowMapper<?> rowMapper;
 
-	JdbcRepositoryQuery(JdbcQueryMethod queryMethod, JdbcMappingContext context, RowMapper rowMapper) {
+	JdbcRepositoryQuery(JdbcQueryMethod queryMethod, JdbcMappingContext context, RowMapper defaultRowMapper) {
 
 		this.queryMethod = queryMethod;
 		this.context = context;
-		this.rowMapper = rowMapper;
+		this.rowMapper = createRowMapper(queryMethod, defaultRowMapper);
+	}
+
+	private static RowMapper<?> createRowMapper(JdbcQueryMethod queryMethod, RowMapper defaultRowMapper) {
+
+		Class<?> rowMapperClass = queryMethod.getRowMapperClass();
+
+		return rowMapperClass == null || rowMapperClass == RowMapper.class ? defaultRowMapper : (RowMapper<?>) BeanUtils.instantiateClass(rowMapperClass);
 	}
 
 	@Override
 	public Object execute(Object[] objects) {
 
+		if (queryMethod.isCollectionQuery() || queryMethod.isStreamQuery()) {
+			return context.getTemplate().query(determineQuery(), bindParameters(objects), rowMapper);
+		} else {
+
+			try {
+				return context.getTemplate().queryForObject(determineQuery(), bindParameters(objects), rowMapper);
+			} catch (EmptyResultDataAccessException e) {
+				return null;
+			}
+		}
+	}
+
+	private String determineQuery() {
+
 		String query = queryMethod.getAnnotatedQuery();
+
+		if (StringUtils.isEmpty(query)) {
+			throw new IllegalStateException(String.format("No query specified on %s", queryMethod.getName()));
+		}
+		return query;
+	}
+
+	private MapSqlParameterSource bindParameters(Object[] objects) {
 
 		MapSqlParameterSource parameters = new MapSqlParameterSource();
 		queryMethod.getParameters().getBindableParameters().forEach(p -> {
@@ -55,16 +86,7 @@ class JdbcRepositoryQuery implements RepositoryQuery {
 			parameters.addValue(parameterName, objects[p.getIndex()]);
 		});
 
-		if (queryMethod.isCollectionQuery() || queryMethod.isStreamQuery()) {
-			return context.getTemplate().query(query, parameters, rowMapper);
-		} else {
-
-			try {
-				return context.getTemplate().queryForObject(query, parameters, rowMapper);
-			} catch (EmptyResultDataAccessException e) {
-				return null;
-			}
-		}
+		return parameters;
 	}
 
 	@Override
